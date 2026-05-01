@@ -127,6 +127,16 @@ set_target_properties(kimera_vio_ros_node PROPERTIES
     INSTALL_RPATH_USE_LINK_PATH TRUE
     BUILD_WITH_INSTALL_RPATH FALSE)
 
+# Force DT_RPATH (legacy, checked before LD_LIBRARY_PATH) instead of
+# DT_RUNPATH (modern, checked after LD_LIBRARY_PATH). Without this,
+# /opt/ros/jazzy/setup.bash exporting LD_LIBRARY_PATH=/opt/ros/jazzy/lib/...
+# defeats our INSTALL_RPATH and we dlopen apt's libgtsam.so.4
+# (TANGENT_PREINTEGRATION=ON, wrong) instead of /opt/kimera-deps/lib/libgtsam.so.4
+# (TANGENT_PREINTEGRATION=OFF, correct). Belt-and-suspenders alongside the
+# matching flag on libkimera_vio.so itself.
+target_link_options(${KIMERA_VIO_ROS_LIB_NAME} PRIVATE "-Wl,--disable-new-dtags")
+target_link_options(kimera_vio_ros_node PRIVATE "-Wl,--disable-new-dtags")
+
 install(TARGETS ${KIMERA_VIO_ROS_LIB_NAME}
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
