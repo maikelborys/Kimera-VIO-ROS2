@@ -41,6 +41,10 @@ T getOrDeclare(rclcpp::Node* node, const std::string& name, const T& def) {
 // Hydra-RPGO weights edges by this; ROS 1 wrapper left zeros (TODO in source).
 // Order of gtsam Pose3 tangent space is [rx ry rz tx ty tz] — same convention
 // the ROS msg consumers (Hydra) already expect for between-factor edges.
+// Both Backend's ODOM BetweenFactor<Pose3> and LCD's LOOPCLOSE BetweenFactor<Pose3>
+// use gtsam::noiseModel::Diagonal (subclass of Gaussian), so a direct cast
+// succeeds for both. Empirically verified on EuRoC MH_03_medium: typeid is
+// gtsam::noiseModel::Diagonal in every observed call.
 void fillEdgeCovariance(const gtsam::SharedNoiseModel& noise_model,
                         std::array<double, 36>* out) {
   for (auto& v : *out) v = 0.0;
@@ -367,8 +371,33 @@ void RosLoopClosureVisualizer::publishPoseGraph(
     last_lc_edge.pose.orientation.w = quaternion.w();
     last_lc_edge.header.stamp = rclcpp::Time(ts);
     last_lc_edge.type = PoseGraphEdgeMsg::LOOPCLOSE;
-    incremental_graph.edges.push_back(last_lc_edge);
-    loop_closure_edges_.push_back(last_lc_edge);
+    // updateNodesAndEdges() + updateRejectedEdges() (called above) have just
+    // populated loop_closure_edges_ with the same LCD between-factor and its
+    // gtsam noise-model covariance — but only for RPGO inliers (LCD detections
+    // that survived RPGO's outlier rejector and made it into nfg). For
+    // detections RPGO rejected, no matching entry exists and the lookup fails;
+    // those edges have no factor to extract a noise model from, so we skip
+    // publishing them rather than ship a covariance-less LOOPCLOSE edge that
+    // a downstream factor-graph consumer (Hydra-RPGO) would treat as
+    // infinite-confidence. /pose_graph_incremental and /pose_graph cumulative
+    // therefore carry the same set of LOOPCLOSE edges (RPGO inliers only).
+    bool found_inlier = false;
+    for (const auto& edge : loop_closure_edges_) {
+      if (edge.key_from == lcd_output->id_match_ &&
+          edge.key_to == lcd_output->id_recent_ &&
+          edge.type == PoseGraphEdgeMsg::LOOPCLOSE) {
+        last_lc_edge.covariance = edge.covariance;
+        found_inlier = true;
+        break;
+      }
+    }
+    if (found_inlier) {
+      incremental_graph.edges.push_back(last_lc_edge);
+    }
+    // Do NOT push to loop_closure_edges_ — this LCD edge is already there
+    // (with covariance) from updateRejectedEdges(). Pushing again created
+    // a covariance-less duplicate that doubled LOOPCLOSE counts in the
+    // cumulative pose_graph (e.g. 292 entries vs 146 unique on MH_03).
   }
   incremental_graph.header.stamp = rclcpp::Time(ts);
   incremental_graph.header.frame_id = map_frame_id_;
